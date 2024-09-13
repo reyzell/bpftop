@@ -17,8 +17,9 @@
  */
 use anyhow::{anyhow, Context, Result};
 use app::SortColumn;
-use app::{App, Mode};
+use app::{App, Mode, Options};
 use bpf_program::BpfProgram;
+use clap::Parser;
 use crossterm::event::{self, poll, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -79,6 +80,7 @@ fn main() -> Result<()> {
     if !running_as_root() {
         return Err(anyhow!("This program must be run as root"));
     }
+    let opt = Options::parse();
 
     // Initialize the tracing subscriber with the journald layer
     let registry = tracing_subscriber::registry()
@@ -117,49 +119,50 @@ fn main() -> Result<()> {
         }
     }
 
-    // setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    if opt.text_mode {
+        let app = App::new();
+        app.start_background_thread(opt);
+    } else {
+        // setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+        terminal.clear()?;
 
-    // capture panic to disable BPF stats via procfs and restore terminal
-    let previous_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        if stats_enabled_via_procfs {
-            if let Err(err) = procs_bfs_stats_disable() {
-                eprintln!("Failed to disable BPF stats via procfs: {:?}", err);
+        // capture panic to disable BPF stats via procfs and restore terminal
+        let previous_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |panic_info| {
+            if stats_enabled_via_procfs {
+                if let Err(err) = procs_bfs_stats_disable() {
+                    eprintln!("Failed to disable BPF stats via procfs: {:?}", err);
+                }
             }
-        }
 
-        if let Err(err) = disable_raw_mode() {
-            eprintln!("Failed to disable raw mode: {:?}", err);
-        }
+            if let Err(err) = disable_raw_mode() {
+                eprintln!("Failed to disable raw mode: {:?}", err);
+            }
 
-        previous_hook(panic_info);
-    }));
+            previous_hook(panic_info);
+        }));
 
-    // create app and run the draw loop
-    let app = App::new();
-    app.start_background_thread();
-    let res = run_draw_loop(&mut terminal, app);
+        // create app and run the draw loop
+        let app = App::new();
+        app.start_background_thread(opt);
 
-    // restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen,)?;
-    terminal.show_cursor()?;
-    terminal.clear()?;
+        let _res = run_draw_loop(&mut terminal, app);
+
+        // restore terminal
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen,)?;
+        terminal.show_cursor()?;
+        terminal.clear()?;
+    };
 
     // disable BPF stats via procfs if needed
     if stats_enabled_via_procfs {
         procs_bfs_stats_disable()?;
-    }
-
-    #[allow(clippy::question_mark)]
-    if res.is_err() {
-        return res;
     }
 
     Ok(())

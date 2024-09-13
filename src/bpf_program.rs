@@ -15,6 +15,7 @@
  *  limitations under the License.
  *
  */
+use std::fmt;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -33,6 +34,22 @@ pub struct BpfProgram {
 impl PartialEq for BpfProgram {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
+    }
+}
+
+impl fmt::Display for BpfProgram {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t\t\t{}\t\t\t{}\t{}\t\t{}",
+            self.id,
+            self.bpf_type,
+            self.name,
+            self.period_average_runtime_ns(),
+            self.total_average_runtime_ns(),
+            self.events_per_second(),
+            self.cpu_time_percent(),
+        )
     }
 }
 

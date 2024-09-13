@@ -19,10 +19,11 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use circular_buffer::CircularBuffer;
+use clap::Parser;
 use libbpf_rs::query::ProgInfoIter;
 use ratatui::widgets::TableState;
 use tui_input::Input;
@@ -65,6 +66,21 @@ pub enum SortColumn {
     Descending(usize),
 }
 
+#[derive(Debug, Parser)]
+pub struct Options {
+    /// Disables the graphical interface
+    #[clap(short, long, default_value_t = false)]
+    pub text_mode: bool,
+
+    /// A filter for the program types or names to display when in text mode
+    #[clap(short, long, default_value = "")]
+    pub filter: String,
+
+    /// The result cadence in text mode
+    #[clap(short, long, default_value_t = 1)]
+    pub period_secs: u64,
+}
+
 impl App {
     pub fn new() -> App {
         App {
@@ -91,14 +107,20 @@ impl App {
         }
     }
 
-    pub fn start_background_thread(&self) {
+    pub fn start_background_thread(&self, opt: Options) {
         let items = Arc::clone(&self.items);
         let data_buf = Arc::clone(&self.data_buf);
         let filter = Arc::clone(&self.filter_input);
         let sort_col = Arc::clone(&self.sorted_column);
         let graphs_bpf_program = Arc::clone(&self.graphs_bpf_program);
 
-        thread::spawn(move || loop {
+        let event_period = Duration::from_secs(opt.period_secs);
+        *filter.lock().unwrap() = opt.filter.into();
+        if opt.text_mode {
+            println!("# Time\t\tID\tType\tName\t\tPeriodAvgRuntimeNs\tTotalAvgRuntimeNs\tEventsPerSec\tCpuTimePct");
+        }
+
+        let handle = thread::spawn(move || loop {
             let loop_start = Instant::now();
 
             let mut items = items.lock().unwrap();
@@ -195,19 +217,33 @@ impl App {
                 SortColumn::NoOrder => {}
             }
 
+            if opt.text_mode {
+                // Display results.
+                let now = SystemTime::now();
+                let epoch = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
+                for prog in items.iter() {
+                    println!("{:?}\t{}", epoch, prog);
+                }
+                println!("");
+            }
+
             // Explicitly drop the remaining MutexGuards
             drop(items);
             drop(sort_col);
 
             // Adjust sleep duration to maintain a 1-second sample period, accounting for loop processing time.
             let elapsed = loop_start.elapsed();
-            let sleep = if elapsed > Duration::from_secs(1) {
-                Duration::from_secs(1)
+            let sleep = if elapsed > event_period {
+                event_period
             } else {
-                Duration::from_secs(1) - elapsed
+                event_period - elapsed
             };
             thread::sleep(sleep);
         });
+
+        if opt.text_mode {
+            handle.join().unwrap();
+        }
     }
 
     pub fn show_graphs(&mut self) {
@@ -230,8 +266,10 @@ impl App {
 
     pub fn selected_program(&self) -> Option<BpfProgram> {
         let items = self.items.lock().unwrap();
-        
-        self.table_state.selected().and_then(|i| items.get(i).cloned())
+
+        self.table_state
+            .selected()
+            .and_then(|i| items.get(i).cloned())
     }
 
     pub fn next_program(&mut self) {
